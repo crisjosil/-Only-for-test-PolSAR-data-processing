@@ -1,0 +1,534 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+import spectral.io.envi as envi
+import os
+import time
+import cv2
+from scipy.ndimage.filters import uniform_filter
+from scipy.ndimage.measurements import variance
+
+
+# Global variables
+intPt = []
+refPt = []
+cropping = False
+    
+# Set all variablers to initial value
+def setGlobalToZero():
+    global intPt, refPt, cropping
+    intPt = []
+    refPt = []
+    cropping = False
+    return
+    
+
+def Open_ENVIasFloat(filename):
+    """
+    This module open Sentinel 1 incoherent images 
+    The header can be read from the ENVI .hdr
+    """
+    lib = envi.open(filename + '.hdr')
+#    header =  np.array([lib.nrows, lib.ncols])
+    header =  np.array([lib.ncols, lib.nrows])
+    datatype = lib.dtype
+    
+    # Opening the first image
+    f = open(filename + '.img', 'rb')
+    img = np.fromfile(f, dtype=datatype)
+    img = img.reshape(header,order='F').astype('f4')
+
+    return(img)
+    
+    
+def Lee_Filter(img,win):
+    """
+    This module aplies Lee Filter with a win x win window 
+    """    
+    img_mean = uniform_filter(img, (win, win))
+    img_sqr_mean = uniform_filter(img**2, (win, win))
+    img_variance = img_sqr_mean - img_mean**2
+
+    overall_variance =variance(img)
+
+    img_weights = img_variance**2 / (img_variance**2 + overall_variance**2)
+    img_output = img_mean + img_weights * (img - img_mean)
+
+    return(img_output)
+    
+    
+def Multilook(img, win, outfile = [], flag = 0):        
+    """
+    This module filter the initial image with a defined kernel (e.g. a boxcar)
+    and it returns only the central pixels (it does multilook).
+    if Flag is 1 then it saves the result as a python file
+    """
+    kernel  = np.ones((win,win),np.float32)/(np.power(win,2))
+
+    img_test =  signal.convolve2d(np.power(np.abs(img),2), kernel, 
+                                  mode='full', boundary='fill', fillvalue=0)
+    img_small = img_test[::win,::win]
+    
+    if flag == 1:
+        np.save(outfile, img_small)
+        img = 0
+    
+    return(img_small,img)
+    
+    
+
+
+def OpenBin(filename):
+    """
+    It opens SLC images as formatted for ESAR
+    The header can be read from the ENVI .hdr
+    """
+    
+    
+    f = open(filename, 'rb')
+    header =  np.array([7080, 8000])#only use if the size is fixed
+    datatype = 'float32'#only use if the size is fixed
+    #header = np.fromfile(f, dtype='>i4', count=2)
+    #data = np.fromfile(f, dtype='>c8').reshape(header,order='F')
+    data = np.fromfile(f, dtype=datatype, sep="")#only use if the size is fixed
+    data = data.reshape(header).astype('f4')#only use if the size is fixed
+    
+    return(data)
+    
+def vis2mag(img1, img2, title1, title2, flag, outall, out1):
+    """
+    Visualise two magnitude images. The scaling is done as usual
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, sharex=True, sharey=True)
+    ax1.set_title(title1)
+    ax1.imshow(np.abs(img1), cmap = 'gray', vmin=0, vmax=np.abs(img1).mean()*2)
+    ax2.set_title(title2)
+    ax2.imshow(np.abs(img2), cmap = 'gray', vmin=0, vmax=np.abs(img2).mean()*2)
+    if flag == 1:
+        fig.savefig(outall)
+        extent = ax2.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        fig.savefig(out1, bbox_inches=extent)
+
+    return(0)
+    
+
+def visRGB(img1, img2, img3,
+           title,
+           scale1 = [],
+           scale2 = [],
+           scale3 = []):
+    """
+    Visualise the RGB of a single acquisition
+    """           
+    if scale1 == []:
+       scale1 = (0, np.abs(img1).mean()*2)
+    if scale2 == []:
+       scale2 = (0, np.abs(img2).mean()*2)
+    if scale3 == []:
+       scale3 = (0, np.abs(img3).mean()*2)
+
+    size = np.shape(img1)           
+    iRGB = np.zeros([size[0],size[1],3])
+    iRGB[:,:,0] = np.abs(img1)/(np.abs(img1).mean()*2)
+    iRGB[:,:,1] = np.abs(img2)/(np.abs(img2).mean()*2)
+    iRGB[:,:,2] = np.abs(img3)/(np.abs(img3).mean()*2)
+    iRGB[np.abs(iRGB) > 1] = 1
+            
+    plt.figure()
+    plt.suptitle('Main title')
+    plt.imshow(iRGB)
+    
+
+    return       
+           
+           
+
+def vis2RGB(ia1, ib1, ic1,
+           ia2, ib2, ic2,
+           title1 = 'RGB image: Hola',
+           title2 = 'RGB image: Second',
+           scalea1 = [],
+           scaleb1 = [],
+           scalec1 = [],
+           scalea2 = [],
+           scaleb2 = [],
+           scalec2 = [],
+           flag = 0, outall = []):
+    """
+    Visualise the RGB of a single acquisition. The order of images in argument is RGB
+    """           
+    if scalea1 == []:
+       scalea1 = np.abs(ia1).mean()*2.5
+    if scaleb1 == []:
+       scaleb1 = np.abs(ib1).mean()*2.5
+    if scalec1 == []:
+       scalec1 = np.abs(ic1).mean()*2.5
+    if scalea2 == []:
+       scalea2 = np.abs(ia2).mean()*2.5
+    if scaleb2 == []:
+       scaleb2 = np.abs(ib2).mean()*2.5
+    if scalec2 == []:
+       scalec2 = np.abs(ic2).mean()*2.5
+
+    size = np.shape(ia1)           
+    RGB1 = np.zeros([size[0],size[1],3])
+    RGB1[:,:,0] = np.abs(ia1)/scalea1
+    RGB1[:,:,1] = np.abs(ib1)/scaleb1
+    RGB1[:,:,2] = np.abs(ic1)/scalec1
+    RGB1[np.abs(RGB1) > 1] = 1
+
+    RGB2 = np.zeros([size[0],size[1],3])
+    RGB2[:,:,0] = np.abs(ia2)/scalea2
+    RGB2[:,:,1] = np.abs(ib2)/scaleb2
+    RGB2[:,:,2] = np.abs(ic2)/scalec2
+    RGB2[np.abs(RGB2) > 1] = 1
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, sharex=True, sharey=True)
+    ax1.set_title(title1)
+    ax1.imshow(np.abs(RGB1))
+    ax2.set_title(title2)
+    ax2.imshow(np.abs(RGB2))
+    
+    if flag == 1:
+        fig.savefig(outall)
+#        extent = ax2.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+#        fig.savefig(out1, bbox_inches=extent)
+
+    return   
+
+
+           
+def vis2(img1, img2, 
+         title1 = 'Image 1', 
+         title2 = 'Image 2', 
+         scale1 = [], 
+         scale2 = [],  
+         flag = (0, 0), 
+         outall = [], out1 = []):
+    """
+    Visualise any two images. We need to tell it the scaling or it uses the 
+    default for magnitude images
+    """
+    if scale1 == []:
+       scale1 = (0, np.abs(img1).mean()*1.5)
+    if scale2 == []:
+       scale2 = (0, np.abs(img2).mean()*1.5)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, sharex=True, sharey=True)
+    ax1.set_title(title1)
+    ax1.imshow(np.abs(img1), cmap = 'gray', vmin=scale1[0], vmax=scale1[1])
+    ax2.set_title(title2)
+    ax2.imshow(np.abs(img2), cmap = 'gray', vmin=scale2[0], vmax=scale2[1])
+    if flag[0] == 1:
+        fig.savefig(outall)
+    if flag[1] == 1:
+        extent = ax2.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+        fig.savefig(out1, bbox_inches=extent)
+
+    return(fig)
+    
+
+ 
+def getROI(img1):
+    """
+    Visualise any two images. We need to tell it the scaling or it uses the 
+    default for magnitude images
+    """
+
+    cv2.namedWindow("r: redo, s: save&next", cv2.WINDOW_KEEPRATIO)
+#    cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
+#    cv2.setWindowProperty("Image", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        
+    image = np.abs(img1)
+    image = image/np.mean(image)*255
+    image = cv2.convertScaleAbs(image)        
+    
+
+    def click_and_crop(event, x, y, flags, param):
+    	# grab references to the global variables
+    	global refPt, cropping
+     
+    	# if the left mouse button was clicked, record the starting
+    	# (x, y) coordinates and indicate that cropping is being
+    	# performed
+    	if event == cv2.EVENT_LBUTTONDOWN:
+    		refPt = [(x, y)]
+    		cropping = True
+     
+    	# check to see if the left mouse button was released
+    	elif event == cv2.EVENT_LBUTTONUP:
+    		# record the ending (x, y) coordinates and indicate that
+    		# the cropping operation is finished
+    		refPt.append((x, y))
+    		cropping = False
+     
+    		# draw a rectangle around the region of interest
+    		cv2.rectangle(image, refPt[0], refPt[1], (0, 255, 0), 2)
+    		cv2.imshow('r: redo, s: save&next', image)
+  
+    
+    clone = image.copy()
+    cv2.namedWindow('r: redo, s: save&next')
+#    cv2.putText(clone,'Select the ROI (r: repeat; c: copy). Finish with q', (50, 50), 2, 1, (255, 0, 0)) 
+    cv2.setMouseCallback('r: redo, s: save&next', click_and_crop)
+     
+    # keep looping until the 'q' key is pressed
+    while True:
+    	# display the image and wait for a keypress
+    	cv2.imshow('r: redo, s: save&next', clone)
+    	key = cv2.waitKey(1) & 0xFF
+     
+    	# if the 'r' key is pressed, reset the cropping region
+    	if key == ord("r"):
+    		image = clone.copy()
+     
+    	# if the 'c' key is pressed, break from the loop
+    	elif key == ord("s"):
+    		break
+ 
+    # if there are two reference points, then crop the region of interest
+    # from teh image and display it
+    if len(refPt) == 2:
+        small = img1[refPt[0][1]:refPt[1][1], refPt[0][0]:refPt[1][0]]
+        imageS = np.abs(small)
+        imageS = imageS/np.mean(imageS)*255
+        imageS = cv2.convertScaleAbs(imageS)    
+#        cv2.imshow("ROI", imageS)
+#        cv2.waitKey(0)
+     
+     # close all open windows
+    cv2.destroyAllWindows()
+
+    return(refPt)
+    
+
+       
+#def getPoints(img1):
+#    """
+#    Visualise any two images. We need to tell it the scaling or it uses the 
+#    default for magnitude images
+#    """
+#
+#   
+#    def nothing(x):
+#        pass
+#
+#    image = np.abs(img1)#.copy()
+#    clone = image.copy()
+#    k =1            # Initial setting for contrast
+#
+#    def click_and_store(event, x, y, flags, param):
+#    	# grab references to the global variables
+#    	global intPt
+#        
+#    	if event == cv2.EVENT_LBUTTONDOWN:
+#             intPt.append((x, y))
+#        
+#
+#    # Building window and trackbar to set the constrast
+#    cv2.namedWindow("r: redo, s: save&next, q: save&finish", cv2.WINDOW_KEEPRATIO)
+#    cv2.createTrackbar('Contrast','r: redo, s: save&next, q: save&finish', 2, 10, nothing)
+#    cv2.setMouseCallback('r: redo, s: save&next, q: save&finish', click_and_store)
+#     
+#    # keep looping until the 'q' key is pressed
+#    while True:
+#    	# display the image and wait for a keypress
+#    	cv2.imshow('r: redo, s: save&next, q: save&finish', clone)
+#    	key = cv2.waitKey(1) & 0xFF
+#     
+#        clone = image/(np.mean(image)*k)*255
+#        clone = cv2.convertScaleAbs(clone)   
+##        cv2.putText(clone,'Select the Points (click: select; s: save; r: restart).', 
+##                (0, 0), 1, 1, (255, 0, 0)) 
+#
+#        # Inefficient but works
+#        for i in range(0,np.size(intPt)/2-1):
+#            Pt = intPt[i]
+#            cv2.circle(clone, Pt, 2, (255, 0, 0), 2)
+#
+#
+#        # get current positions of trackbars
+#        k = cv2.getTrackbarPos('Contrast','r: redo, s: save&next, q: save&finish')
+#    
+#     
+#    	# if the 'r' key is pressed, reset the cropping region
+#    	if key == ord("r"):
+#    		image = clone.copy()
+#     
+#    	# if the 'c' key is pressed, break from the loop
+#    	elif key == ord("s"):
+#    		break
+#
+#        elif key == ord("q"):
+#            intPt.append((20000,20000))
+#            break
+#
+#     # close all open windows
+#    cv2.destroyAllWindows()
+#
+#    return(intPt)
+
+    
+    
+def vis4(img1, img2, img3, img4, 
+         title1 = 'Image 1', 
+         title2 = 'Image 2',
+         title3 = 'Image 3', 
+         title4 = 'Image 4', 
+         scale1 = [], 
+         scale2 = [],
+         scale3 = [], 
+         scale4 = [],  
+         flag = 0, 
+         outall = [],
+         colormap = 'gray'):
+    """
+    Visualise any two images. We need to tell it the scaling or it uses the 
+    default for magnitude images
+    """
+    if scale1 == []:
+       scale1 = (0, np.abs(img1).mean()*2)
+    if scale2 == []:
+       scale2 = (0, np.abs(img2).mean()*2)
+    if scale3 == []:
+       scale3 = (0, np.abs(img3).mean()*2)
+    if scale4 == []:
+       scale4 = (0, np.abs(img4).mean()*2)
+
+    fig, [(ax1, ax2), (ay1, ay2)] = plt.subplots(2, 2, sharex=True, sharey=True)
+    ax1.set_title(title1)
+    cax1 = ax1.imshow(img1, cmap = colormap, vmin=scale1[0], vmax=scale1[1])
+    plt.colorbar(cax1, ax=ax1)
+    ax2.set_title(title2)
+    cax2 = ax2.imshow(img2, cmap = colormap, vmin=scale2[0], vmax=scale2[1])
+    plt.colorbar(cax2, ax=ax2)
+    ay1.set_title(title3)
+    cax3 = ay1.imshow(img3, cmap = colormap, vmin=scale1[0], vmax=scale3[1])
+    plt.colorbar(cax3, ax=ay1)
+    ay2.set_title(title4)
+    cax4 = ay2.imshow(img4, cmap = colormap, vmin=scale2[0], vmax=scale4[1])
+    plt.colorbar(cax4, ax=ay2)
+    
+    if flag == 1:
+        fig.savefig(outall)
+#    if flag[1] == 1:
+#        extent = ax2.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+#        fig.savefig(out1, bbox_inches=extent)
+
+    return(fig)
+    
+    
+def vis6(img1, img2, img3, img4, img5, img6, 
+         title1 = '', 
+         title2 = '',
+         title3 = '', 
+         title4 = '', 
+         title5 = '', 
+         title6 = '', 
+         scale1 = [], 
+         scale2 = [],
+         scale3 = [], 
+         scale4 = [],
+         scale5 = [], 
+         scale6 = [],   
+         flag = 0, 
+         outall = []):
+    """
+    Visualise any two images. We need to tell it the scaling or it uses the 
+    default for magnitude images
+    """
+    if scale1 == []:
+       scale1 = (0, np.abs(img1).mean()*2)
+    if scale2 == []:
+       scale2 = (0, np.abs(img2).mean()*2)
+    if scale3 == []:
+       scale3 = (0, np.abs(img3).mean()*2)
+    if scale4 == []:
+       scale4 = (0, np.abs(img4).mean()*2)
+    if scale5 == []:
+       scale5 = (0, np.abs(img5).mean()*2)
+    if scale6 == []:
+       scale6 = (0, np.abs(img6).mean()*2)
+       
+    fig, axarr = plt.subplots(2, 3, sharex=True, sharey=True)
+    
+    axarr[0, 0].set_title(title1)
+    axarr[0, 0].imshow(img1, cmap = 'gray', vmin=scale1[0], vmax=scale1[1])
+
+    axarr[0, 1].set_title(title2)
+    axarr[0, 1].imshow(img2, cmap = 'gray', vmin=scale2[0], vmax=scale2[1])
+
+    axarr[0, 2].set_title(title3)
+    axarr[0, 2].imshow(img3, cmap = 'gray', vmin=scale3[0], vmax=scale3[1])
+
+    axarr[1, 0].set_title(title4)
+    axarr[1, 0].imshow(img4, cmap = 'gray', vmin=scale4[0], vmax=scale4[1])
+
+    axarr[1, 1].set_title(title5)
+    axarr[1, 1].imshow(img5, cmap = 'gray', vmin=scale5[0], vmax=scale5[1])
+
+    axarr[1, 2].set_title(title6)
+    axarr[1, 2].imshow(img6, cmap = 'gray', vmin=scale6[0], vmax=scale6[1])
+    
+    if flag == 1:
+        fig.savefig(outall)
+#    if flag[1] == 1:
+#        extent = ax2.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+#        fig.savefig(out1, bbox_inches=extent)
+
+    return(fig)
+
+
+def save_png(img, outpath,
+             scale = [],
+             title = ''):
+    """
+    Visualise any two images. We need to tell it the scaling or it uses the 
+    default for magnitude images
+    """
+    if scale == []:
+       scale = (0, np.abs(img).mean()*2.5)
+
+
+    fig, ax = plt.subplots(1, 1, sharex=True, sharey=True)
+    ax.set_title(title)
+#    cax = fig.add_axes([0.8, 0.1, 0.03, 0.8])
+    im = ax.imshow(img, cmap = 'gray', vmin=scale[0], vmax=scale[1])
+    fig.colorbar(im)
+    fig.savefig(outpath)
+
+    return
+
+
+def Tmatrix(hh, hv, vv, win):
+    """
+    This routine generates the elements of the Coherency matrix, given the 
+    images in lexicographic basis and the size of the moving window
+    """
+    # Elements of the Pauli basis
+    p1 = hh+vv
+    p2 = hh-vv
+    p3 = 2*hv
+    
+#    kernel for averaging
+    kernel  = np.ones((win,win),np.float32)/(np.power(win,2))
+    
+    Taa = signal.convolve2d(np.power(np.abs(p1),2), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+    
+    Tbb = signal.convolve2d(np.power(np.abs(p2),2), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+    
+    Tcc = signal.convolve2d(np.power(np.abs(p3),2), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+    
+    Tab = signal.convolve2d(p1*np.conj(p2), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+    
+    Tac = signal.convolve2d(p1*np.conj(p3), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+    
+    Tbc = signal.convolve2d(p2*np.conj(p3), kernel, 
+                            mode='full', boundary='fill', fillvalue=0)
+                            
+    return(Taa, Tbb, Tcc, Tab, Tac, Tbc)
